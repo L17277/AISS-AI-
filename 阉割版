@@ -1,0 +1,1133 @@
+import tkinter as tk
+from tkinter import ttk, scrolledtext, messagebox, simpledialog
+import random
+import time
+import threading
+import json
+import os
+from datetime import datetime
+from dataclasses import dataclass
+from typing import List, Dict, Optional, Tuple
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import matplotlib.font_manager as fm
+
+# 设置中文字体 - 修复字体问题
+def setup_chinese_font():
+    """设置中文字体支持"""
+    # 尝试使用系统中可用的中文字体
+    chinese_fonts = ['SimHei', 'Microsoft YaHei', 'KaiTi', 'SimSun', 'FangSong']
+    available_fonts = []
+    
+    for font in chinese_fonts:
+        try:
+            if fm.findfont(font):
+                available_fonts.append(font)
+        except:
+            continue
+    
+    if available_fonts:
+        plt.rcParams['font.sans-serif'] = available_fonts + ['DejaVu Sans']
+        plt.rcParams['axes.unicode_minus'] = False
+        return available_fonts[0]
+    else:
+        # 如果没有中文字体，使用默认字体
+        plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
+        return 'DejaVu Sans'
+
+# 初始化字体
+chinese_font = setup_chinese_font()
+
+@dataclass
+class Resource:
+    """资源点"""
+    id: int
+    x: int
+    y: int
+    resource_type: str  # "food" 或 "material"
+    amount: float
+    max_amount: float
+    is_depleted: bool = False
+
+@dataclass
+class Tool:
+    """工具"""
+    id: str
+    name: str
+    tool_type: str
+    efficiency: float
+    material_cost: int
+    development_time: int
+    developer_id: str
+    known_by: List[str]
+
+@dataclass
+class Individual:
+    """AI个体"""
+    id: str
+    x: int
+    y: int
+    intelligence: int
+    physical: int
+    perception: int
+    age: int = 0
+    health: int = 100
+    hunger: int = 0
+    fear: float = 0.0
+    curiosity: float = 0.0
+    cooperation: float = 0.0
+    aggression: float = 0.0
+    carried_food: int = 0
+    carried_materials: int = 0
+    current_tool: Optional[str] = None
+    has_house: bool = False
+    known_tools: List[str] = None
+    memory: List[str] = None
+    social_connections: Dict[str, float] = None
+    
+    def __post_init__(self):
+        if self.known_tools is None:
+            self.known_tools = []
+        if self.memory is None:
+            self.memory = []
+        if self.social_connections is None:
+            self.social_connections = {}
+
+class MiniAIWorld:
+    """迷你版AI世界模拟系统"""
+    
+    def __init__(self):
+        # 世界参数
+        self.world_size = (500, 500)
+        self.max_resources = 200
+        self.initial_population = 20
+        self.current_day = 0
+        self.simulation_running = False
+        self.simulation_paused = False
+        self.simulation_speed = 1.0
+        
+        # 繁殖参数（提高概率和范围）
+        self.reproduction_probability = 0.15  # 从0.05提高到0.15
+        self.reproduction_range = 100  # 繁殖范围
+        
+        # 数据存储
+        self.data_dir = "mini_world_data"
+        os.makedirs(self.data_dir, exist_ok=True)
+        
+        # 世界状态
+        self.individuals: List[Individual] = []
+        self.resources: List[Resource] = []
+        self.tools: Dict[str, Tool] = {}
+        self.houses = []
+        self.messages = []
+        self.death_log = []
+        
+        # 统计信息
+        self.stats = {
+            'population': [],
+            'tools_created': 0,
+            'resources_collected': 0,
+            'communications': 0,
+            'deaths': 0,
+            'births': 0
+        }
+        
+        # 初始化GUI
+        self._setup_gui()
+        
+        # 初始化世界
+        self._initialize_world()
+    
+    def _setup_gui(self):
+        """设置图形用户界面"""
+        self.root = tk.Tk()
+        self.root.title("AI世界模拟系统 v2.0")
+        self.root.geometry("1200x800")
+        
+        # 创建主框架
+        main_frame = ttk.Frame(self.root)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # 控制面板
+        control_frame = ttk.LabelFrame(main_frame, text="控制面板", padding="10")
+        control_frame.pack(fill=tk.X, pady=5)
+        
+        # 第一行：基本控制
+        btn_frame1 = ttk.Frame(control_frame)
+        btn_frame1.pack(fill=tk.X, pady=5)
+        
+        self.start_btn = ttk.Button(btn_frame1, text="开始模拟", command=self.start_simulation)
+        self.start_btn.pack(side=tk.LEFT, padx=5)
+        
+        self.pause_btn = ttk.Button(btn_frame1, text="暂停", command=self.pause_simulation, state="disabled")
+        self.pause_btn.pack(side=tk.LEFT, padx=5)
+        
+        self.stop_btn = ttk.Button(btn_frame1, text="停止", command=self.stop_simulation, state="disabled")
+        self.stop_btn.pack(side=tk.LEFT, padx=5)
+        
+        # 世界管理按钮
+        self.new_world_btn = ttk.Button(btn_frame1, text="新建世界", command=self.new_world)
+        self.new_world_btn.pack(side=tk.LEFT, padx=5)
+        
+        self.overwrite_btn = ttk.Button(btn_frame1, text="重置世界", command=self.overwrite_world)
+        self.overwrite_btn.pack(side=tk.LEFT, padx=5)
+        
+        # 第二行：参数调整
+        btn_frame2 = ttk.Frame(control_frame)
+        btn_frame2.pack(fill=tk.X, pady=5)
+        
+        # 人口调整
+        ttk.Label(btn_frame2, text="人口调整:").pack(side=tk.LEFT, padx=(0, 5))
+        
+        self.add_pop_btn = ttk.Button(btn_frame2, text="增加人口", command=self.add_population)
+        self.add_pop_btn.pack(side=tk.LEFT, padx=2)
+        
+        self.remove_pop_btn = ttk.Button(btn_frame2, text="减少人口", command=self.remove_population)
+        self.remove_pop_btn.pack(side=tk.LEFT, padx=2)
+        
+        self.set_pop_btn = ttk.Button(btn_frame2, text="设置人口", command=self.set_population)
+        self.set_pop_btn.pack(side=tk.LEFT, padx=2)
+        
+        # 繁殖参数调整
+        ttk.Label(btn_frame2, text="繁殖概率:").pack(side=tk.LEFT, padx=(20, 5))
+        self.reproduction_var = tk.DoubleVar(value=self.reproduction_probability)
+        repro_scale = ttk.Scale(btn_frame2, from_=0.01, to=0.5, variable=self.reproduction_var,
+                               orient=tk.HORIZONTAL, command=self._on_reproduction_change)
+        repro_scale.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        self.repro_label = ttk.Label(btn_frame2, text=f"{self.reproduction_probability:.2f}")
+        self.repro_label.pack(side=tk.LEFT, padx=5)
+        
+        # 第三行：速度控制
+        btn_frame3 = ttk.Frame(control_frame)
+        btn_frame3.pack(fill=tk.X, pady=5)
+        
+        ttk.Label(btn_frame3, text="模拟速度:").pack(side=tk.LEFT)
+        self.speed_var = tk.DoubleVar(value=1.0)
+        speed_scale = ttk.Scale(btn_frame3, from_=0.1, to=5.0, variable=self.speed_var, 
+                               orient=tk.HORIZONTAL, command=self._on_speed_change)
+        speed_scale.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        self.speed_label = ttk.Label(btn_frame3, text="1.0x")
+        self.speed_label.pack(side=tk.LEFT, padx=5)
+        
+        # 保存按钮
+        self.save_btn = ttk.Button(btn_frame3, text="保存状态", command=self._save_world_state)
+        self.save_btn.pack(side=tk.RIGHT, padx=5)
+        
+        # 可视化区域
+        viz_frame = ttk.Frame(main_frame)
+        viz_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        
+        # 图表
+        self._setup_charts(viz_frame)
+        
+        # 状态和信息区域
+        info_frame = ttk.Frame(main_frame)
+        info_frame.pack(fill=tk.X, pady=5)
+        
+        # 状态信息
+        status_frame = ttk.LabelFrame(info_frame, text="实时状态", width=300)
+        status_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
+        
+        self.status_text = scrolledtext.ScrolledText(status_frame, height=8)
+        self.status_text.pack(fill=tk.BOTH, expand=True)
+        self.status_text.config(state=tk.DISABLED)
+        
+        # 事件日志
+        event_frame = ttk.LabelFrame(info_frame, text="事件日志", width=300)
+        event_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(5, 0))
+        
+        self.event_text = scrolledtext.ScrolledText(event_frame, height=8)
+        self.event_text.pack(fill=tk.BOTH, expand=True)
+        self.event_text.config(state=tk.DISABLED)
+        
+        # 底部状态栏
+        self.status_var = tk.StringVar(value="就绪")
+        status_bar = ttk.Label(main_frame, textvariable=self.status_var, relief=tk.SUNKEN)
+        status_bar.pack(fill=tk.X, pady=5)
+    
+    def _setup_charts(self, parent):
+        """设置图表"""
+        self.fig, ((self.ax1, self.ax2), (self.ax3, self.ax4)) = plt.subplots(2, 2, figsize=(10, 6))
+        
+        # 设置图表字体
+        for ax in [self.ax1, self.ax2, self.ax3, self.ax4]:
+            ax.title.set_fontname(chinese_font)
+            ax.xaxis.label.set_fontname(chinese_font)
+            ax.yaxis.label.set_fontname(chinese_font)
+        
+        # 人口图表
+        self.ax1.set_title('人口趋势')
+        self.ax1.set_xlabel('天数')
+        self.ax1.set_ylabel('人口数量')
+        self.population_line, = self.ax1.plot([], [], 'b-', linewidth=2)
+        self.ax1.grid(True, alpha=0.3)
+        
+        # 工具图表
+        self.ax2.set_title('工具发展')
+        self.ax2.set_xlabel('天数')
+        self.ax2.set_ylabel('工具数量')
+        self.tools_line, = self.ax2.plot([], [], 'g-', linewidth=2)
+        self.ax2.grid(True, alpha=0.3)
+        
+        # 资源图表
+        self.ax3.set_title('资源使用')
+        self.ax3.set_xlabel('天数')
+        self.ax3.set_ylabel('资源数量')
+        self.food_line, = self.ax3.plot([], [], 'orange', linewidth=2, label='食物')
+        self.material_line, = self.ax3.plot([], [], 'brown', linewidth=2, label='材料')
+        self.ax3.legend(prop={'family': chinese_font})
+        self.ax3.grid(True, alpha=0.3)
+        
+        # 社会活动图表
+        self.ax4.set_title('社会活动')
+        self.ax4.set_xlabel('天数')
+        self.ax4.set_ylabel('交流次数')
+        self.comm_line, = self.ax4.plot([], [], 'purple', linewidth=2, label='交流')
+        self.ax4.legend(prop={'family': chinese_font})
+        self.ax4.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        
+        self.canvas = FigureCanvasTkAgg(self.fig, parent)
+        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+    
+    def _initialize_world(self):
+        """初始化世界"""
+        # 生成资源
+        self._generate_resources()
+        
+        # 生成初始个体
+        self._generate_initial_individuals()
+        
+        # 更新状态显示
+        self._update_status_display()
+        
+        self._add_event("世界初始化完成")
+        self._add_event(f"初始人口: {self.initial_population}")
+        self._add_event(f"繁殖概率: {self.reproduction_probability:.2f}")
+        self._add_event(f"繁殖范围: {self.reproduction_range}")
+    
+    def _generate_resources(self):
+        """生成资源点"""
+        self.resources.clear()
+        resource_id = 0
+        for _ in range(self.max_resources // 2):
+            x = random.randint(0, self.world_size[0])
+            y = random.randint(0, self.world_size[1])
+            resource_type = "food" if random.random() > 0.5 else "material"
+            amount = random.randint(20, 100)
+            
+            self.resources.append(Resource(
+                id=resource_id,
+                x=x, y=y,
+                resource_type=resource_type,
+                amount=amount,
+                max_amount=amount
+            ))
+            resource_id += 1
+    
+    def _generate_initial_individuals(self):
+        """生成初始个体"""
+        self.individuals.clear()
+        for i in range(self.initial_population):
+            x = random.randint(0, self.world_size[0])
+            y = random.randint(0, self.world_size[1])
+            
+            individual = Individual(
+                id=f"{i+1}.{random.randint(30,90)}.{random.randint(40,85)}.{random.randint(35,80)}",
+                x=x, y=y,
+                intelligence=random.randint(30, 90),
+                physical=random.randint(40, 85),
+                perception=random.randint(35, 80),
+                curiosity=random.random(),
+                cooperation=random.random(),
+                aggression=random.random() * 0.3  # 初始攻击性较低
+            )
+            
+            # 给予初始资源
+            individual.carried_food = random.randint(10, 30)
+            individual.carried_materials = random.randint(5, 15)
+            
+            self.individuals.append(individual)
+    
+    def _on_speed_change(self, value):
+        """速度改变回调"""
+        self.simulation_speed = float(value)
+        self.speed_label.config(text=f"{self.simulation_speed:.1f}x")
+    
+    def _on_reproduction_change(self, value):
+        """繁殖概率改变回调"""
+        self.reproduction_probability = float(value)
+        self.repro_label.config(text=f"{self.reproduction_probability:.2f}")
+    
+    def new_world(self):
+        """新建世界"""
+        if self.simulation_running:
+            messagebox.showwarning("警告", "请先停止模拟再新建世界")
+            return
+        
+        result = messagebox.askyesno("新建世界", "这将清除当前世界所有数据并创建新世界，确定继续吗？")
+        if result:
+            # 重置所有状态
+            self.current_day = 0
+            self.individuals.clear()
+            self.resources.clear()
+            self.tools.clear()
+            self.houses.clear()
+            self.messages.clear()
+            self.death_log.clear()
+            
+            # 重置统计
+            self.stats = {
+                'population': [],
+                'tools_created': 0,
+                'resources_collected': 0,
+                'communications': 0,
+                'deaths': 0,
+                'births': 0
+            }
+            
+            # 重新初始化
+            self._initialize_world()
+            
+            # 清除事件日志
+            self.event_text.config(state=tk.NORMAL)
+            self.event_text.delete(1.0, tk.END)
+            self.event_text.config(state=tk.DISABLED)
+            
+            # 重置图表
+            self._update_charts()
+            
+            self._add_event("🆕 新世界创建完成！")
+            self.status_var.set("新世界已创建")
+    
+    def overwrite_world(self):
+        """覆盖当前世界（保留个体但重置状态）"""
+        if self.simulation_running:
+            messagebox.showwarning("警告", "请先停止模拟再覆盖世界")
+            return
+        
+        result = messagebox.askyesno("覆盖世界", "这将重置世界状态但保留现有个体，确定继续吗？")
+        if result:
+            # 备份当前个体
+            current_individuals = self.individuals.copy()
+            
+            # 重置世界状态
+            self.current_day = 0
+            self.individuals.clear()
+            self.resources.clear()
+            self.tools.clear()
+            self.houses.clear()
+            self.messages.clear()
+            self.death_log.clear()
+            
+            # 重置统计但保留人口历史
+            pop_history = self.stats['population'][-1] if self.stats['population'] else 0
+            self.stats = {
+                'population': [pop_history] if pop_history > 0 else [],
+                'tools_created': 0,
+                'resources_collected': 0,
+                'communications': 0,
+                'deaths': 0,
+                'births': 0
+            }
+            
+            # 重新生成资源
+            self._generate_resources()
+            
+            # 恢复个体但重置状态
+            for individual in current_individuals:
+                individual.age = 0
+                individual.health = 100
+                individual.hunger = 0
+                individual.carried_food = random.randint(10, 30)
+                individual.carried_materials = random.randint(5, 15)
+                individual.has_house = False
+                individual.current_tool = None
+                # 保留已知工具但清除具体工具对象（将在工具重新生成时重建）
+                individual.known_tools = []
+                
+                self.individuals.append(individual)
+            
+            # 更新显示
+            self._update_status_display()
+            self._update_charts()
+            
+            self._add_event("🔄 世界状态已覆盖重置")
+            self._add_event(f"保留个体数量: {len(self.individuals)}")
+            self.status_var.set("世界已覆盖重置")
+    
+    def add_population(self):
+        """增加人口"""
+        if self.simulation_running:
+            messagebox.showwarning("警告", "请先停止模拟再调整人口")
+            return
+        
+        count = simpledialog.askinteger("增加人口", "请输入要增加的人口数量:", 
+                                          initialvalue=5, minvalue=1, maxvalue=100)
+        if count:
+            self._create_individuals(count)
+            self._add_event(f"➕ 增加了 {count} 个新个体")
+            self._update_status_display()
+    
+    def remove_population(self):
+        """减少人口"""
+        if self.simulation_running:
+            messagebox.showwarning("警告", "请先停止模拟再调整人口")
+            return
+        
+        if len(self.individuals) <= 1:
+            messagebox.showwarning("警告", "至少需要保留1个个体")
+            return
+        
+        count = simpledialog.askinteger("减少人口", "请输入要减少的人口数量:", 
+                                          initialvalue=min(5, len(self.individuals)-1), 
+                                          minvalue=1, maxvalue=len(self.individuals)-1)
+        if count:
+            # 随机移除个体
+            to_remove = random.sample(self.individuals, count)
+            for individual in to_remove:
+                self.individuals.remove(individual)
+            
+            self._add_event(f"➖ 移除了 {count} 个个体")
+            self._update_status_display()
+    
+    def set_population(self):
+        """设置特定人口数量"""
+        if self.simulation_running:
+            messagebox.showwarning("警告", "请先停止模拟再调整人口")
+            return
+        
+        target_pop = simpledialog.askinteger("设置人口", "请输入目标人口数量:", 
+                                               initialvalue=len(self.individuals), 
+                                               minvalue=1, maxvalue=1000)
+        if target_pop is not None:
+            current_pop = len(self.individuals)
+            if target_pop > current_pop:
+                # 需要增加人口
+                self._create_individuals(target_pop - current_pop)
+                self._add_event(f"🎯 人口设置为 {target_pop} (增加了 {target_pop - current_pop} 个个体)")
+            elif target_pop < current_pop:
+                # 需要减少人口
+                to_remove = random.sample(self.individuals, current_pop - target_pop)
+                for individual in to_remove:
+                    self.individuals.remove(individual)
+                self._add_event(f"🎯 人口设置为 {target_pop} (移除了 {current_pop - target_pop} 个个体)")
+            else:
+                self._add_event(f"🎯 人口保持为 {target_pop}")
+            
+            self._update_status_display()
+    
+    def _create_individuals(self, count):
+        """创建指定数量的新个体"""
+        for i in range(count):
+            x = random.randint(0, self.world_size[0])
+            y = random.randint(0, self.world_size[1])
+            
+            individual = Individual(
+                id=f"{len(self.individuals)+1}.{random.randint(30,90)}.{random.randint(40,85)}.{random.randint(35,80)}",
+                x=x, y=y,
+                intelligence=random.randint(30, 90),
+                physical=random.randint(40, 85),
+                perception=random.randint(35, 80),
+                curiosity=random.random(),
+                cooperation=random.random(),
+                aggression=random.random() * 0.3
+            )
+            
+            # 给予初始资源
+            individual.carried_food = random.randint(10, 30)
+            individual.carried_materials = random.randint(5, 15)
+            
+            self.individuals.append(individual)
+    
+    def start_simulation(self):
+        """开始模拟"""
+        if self.simulation_running:
+            return
+        
+        self.simulation_running = True
+        self.simulation_paused = False
+        
+        self.start_btn.config(state="disabled")
+        self.pause_btn.config(state="normal")
+        self.stop_btn.config(state="normal")
+        
+        self.status_var.set("模拟运行中...")
+        self._add_event("模拟开始")
+        
+        # 启动模拟线程
+        self.simulation_thread = threading.Thread(target=self._simulation_loop, daemon=True)
+        self.simulation_thread.start()
+    
+    def pause_simulation(self):
+        """暂停/继续模拟"""
+        self.simulation_paused = not self.simulation_paused
+        
+        if self.simulation_paused:
+            self.pause_btn.config(text="继续")
+            self.status_var.set("模拟已暂停")
+            self._add_event("模拟暂停")
+        else:
+            self.pause_btn.config(text="暂停")
+            self.status_var.set("模拟运行中...")
+            self._add_event("模拟继续")
+    
+    def stop_simulation(self):
+        """停止模拟"""
+        self.simulation_running = False
+        self.simulation_paused = False
+        
+        self.start_btn.config(state="normal")
+        self.pause_btn.config(state="disabled")
+        self.stop_btn.config(state="disabled")
+        self.pause_btn.config(text="暂停")
+        
+        self.status_var.set("模拟已停止")
+        self._add_event("模拟停止")
+        self._save_world_state()
+    
+    def _simulation_loop(self):
+        """模拟循环"""
+        while self.simulation_running:
+            if not self.simulation_paused:
+                self._simulate_day()
+                
+                # 更新GUI
+                self.root.after(0, self._update_display)
+                
+                # 根据速度调整
+                time.sleep(1.0 / self.simulation_speed)
+            else:
+                time.sleep(0.1)
+    
+    def _simulate_day(self):
+        """模拟一天"""
+        self.current_day += 1
+        
+        # 更新个体状态
+        self._update_individuals()
+        
+        # 个体决策和行为
+        self._process_individual_actions()
+        
+        # 处理繁殖（使用提高后的概率）
+        self._process_reproduction()
+        
+        # 处理死亡
+        self._process_deaths()
+        
+        # 资源再生
+        self._regenerate_resources()
+        
+        # 工具知识传播
+        self._spread_tool_knowledge()
+        
+        # 收集统计信息
+        self._collect_statistics()
+        
+        # 定期保存
+        if self.current_day % 10 == 0:
+            self._save_world_state()
+    
+    def _update_individuals(self):
+        """更新个体状态"""
+        for individual in self.individuals[:]:  # 使用切片避免修改问题
+            # 年龄增长
+            individual.age += 1
+            
+            # 饥饿增加
+            individual.hunger += random.randint(1, 3)
+            
+            # 健康衰减
+            if individual.hunger > 50:
+                individual.health -= 2
+            elif individual.hunger > 80:
+                individual.health -= 5
+            
+            # 住宅加成
+            if individual.has_house:
+                individual.health += 1
+                individual.hunger -= 1
+            
+            # 限制范围
+            individual.health = max(0, min(100, individual.health))
+            individual.hunger = max(0, min(100, individual.hunger))
+    
+    def _process_individual_actions(self):
+        """处理个体行为"""
+        random.shuffle(self.individuals)  # 随机顺序处理
+        
+        for individual in self.individuals:
+            if individual.health <= 0:
+                continue
+                
+            # 决策优先级
+            action = self._choose_action(individual)
+            self._execute_action(individual, action)
+    
+    def _choose_action(self, individual: Individual) -> str:
+        """选择行为"""
+        # 紧急情况
+        if individual.health < 20:
+            return "rest"
+        if individual.hunger > 80:
+            return "gather_food"
+        
+        # 基于需求和性格的决策
+        weights = {
+            "gather_food": max(0, individual.hunger - 30) * (1 - individual.curiosity),
+            "gather_materials": (100 - individual.hunger) * 0.5 * individual.curiosity,
+            "develop_tool": individual.intelligence * 0.01 * individual.curiosity,
+            "communicate": individual.cooperation * 50,
+            "build_house": (individual.carried_materials / 50) * (1 - individual.has_house) * 30,
+            "rest": max(0, 80 - individual.health) * 2
+        }
+        
+        # 随机选择加权行为
+        actions, probs = zip(*weights.items())
+        total = sum(probs)
+        if total == 0:
+            return "explore"
+        
+        r = random.uniform(0, total)
+        cumulative = 0
+        for action, prob in zip(actions, probs):
+            cumulative += prob
+            if r <= cumulative:
+                return action
+        
+        return "explore"
+    
+    def _execute_action(self, individual: Individual, action: str):
+        """执行行为"""
+        if action == "gather_food":
+            self._gather_resource(individual, "food")
+        elif action == "gather_materials":
+            self._gather_resource(individual, "material")
+        elif action == "develop_tool":
+            self._develop_tool(individual)
+        elif action == "communicate":
+            self._communicate(individual)
+        elif action == "build_house":
+            self._build_house(individual)
+        elif action == "rest":
+            individual.health += 5
+        else:  # explore
+            self._move_individual(individual)
+    
+    def _gather_resource(self, individual: Individual, resource_type: str):
+        """采集资源"""
+        # 寻找最近的资源
+        nearest_resource = None
+        min_distance = float('inf')
+        
+        for resource in self.resources:
+            if resource.resource_type == resource_type and not resource.is_depleted:
+                distance = self._calculate_distance(individual.x, individual.y, resource.x, resource.y)
+                if distance < min_distance and distance < individual.perception:
+                    min_distance = distance
+                    nearest_resource = resource
+        
+        if nearest_resource:
+            # 移动到资源点
+            individual.x, individual.y = self._move_towards(
+                individual.x, individual.y, nearest_resource.x, nearest_resource.y, 10
+            )
+            
+            # 采集资源
+            gather_amount = 5  # 基础采集量
+            
+            # 工具加成
+            if individual.current_tool and individual.current_tool in self.tools:
+                tool = self.tools[individual.current_tool]
+                if tool.tool_type == resource_type or tool.tool_type == "universal":
+                    gather_amount *= (1 + tool.efficiency)
+            
+            actual_gather = min(gather_amount, nearest_resource.amount)
+            nearest_resource.amount -= actual_gather
+            
+            if resource_type == "food":
+                individual.carried_food += actual_gather
+                individual.hunger = max(0, individual.hunger - actual_gather * 0.5)
+            else:
+                individual.carried_materials += actual_gather
+            
+            if nearest_resource.amount <= 0:
+                nearest_resource.is_depleted = True
+            
+            self.stats['resources_collected'] += actual_gather
+            
+            # 记录事件
+            if random.random() < 0.1:  # 10%概率记录
+                self._add_event(f"{individual.id} 采集了{actual_gather:.1f} {resource_type}")
+    
+    def _develop_tool(self, individual: Individual):
+        """开发工具"""
+        if individual.carried_materials < 10:
+            return
+        
+        # 消耗材料
+        materials_used = min(individual.carried_materials, random.randint(5, 20))
+        individual.carried_materials -= materials_used
+        
+        # 计算成功率
+        success_chance = individual.intelligence / 200 + individual.curiosity * 0.2
+        development_time = max(1, 10 - individual.intelligence // 20)
+        
+        if random.random() < success_chance:
+            # 工具开发成功
+            tool_type = random.choice(["food", "material", "universal"])
+            base_efficiency = 0.1  # 基础效率10%
+            
+            # 基于已有知识改进 - 修复空列表问题
+            known_tools_of_type = [
+                self.tools[tool_id].efficiency 
+                for tool_id in individual.known_tools 
+                if tool_id in self.tools and self.tools[tool_id].tool_type == tool_type
+            ]
+            
+            if known_tools_of_type:
+                best_efficiency = max(known_tools_of_type)
+                base_efficiency = min(0.9, best_efficiency + random.uniform(0.05, 0.15))
+            else:
+                base_efficiency = random.uniform(0.1, 0.3)
+            
+            tool_id = f"T{len(self.tools)+1}.{tool_type}.{base_efficiency:.2f}.{materials_used}.{development_time}"
+            
+            tool = Tool(
+                id=tool_id,
+                name=f"工具{len(self.tools)+1}",
+                tool_type=tool_type,
+                efficiency=base_efficiency,
+                material_cost=materials_used,
+                development_time=development_time,
+                developer_id=individual.id,
+                known_by=[individual.id]
+            )
+            
+            self.tools[tool_id] = tool
+            individual.known_tools.append(tool_id)
+            individual.current_tool = tool_id
+            
+            self.stats['tools_created'] += 1
+            self._add_event(f"🎉 {individual.id} 开发了新工具: {tool_id} (效率: {base_efficiency:.1%})")
+        
+        else:
+            # 开发失败
+            self._add_event(f"{individual.id} 工具开发失败，损失了{materials_used}材料")
+    
+    def _communicate(self, individual: Individual):
+        """交流行为"""
+        # 寻找附近的个体
+        nearby_individuals = [
+            other for other in self.individuals 
+            if other != individual and 
+            self._calculate_distance(individual.x, individual.y, other.x, other.y) < individual.perception
+        ]
+        
+        if nearby_individuals:
+            other = random.choice(nearby_individuals)
+            
+            # 交流内容
+            message_types = [
+                "问候", "资源信息", "工具信息", "威胁警告", "合作提议"
+            ]
+            message_type = random.choice(message_types)
+            
+            # 记录消息
+            message = {
+                'from': individual.id,
+                'to': other.id,
+                'type': message_type,
+                'day': self.current_day
+            }
+            self.messages.append(message)
+            
+            self.stats['communications'] += 1
+            
+            # 工具知识传播
+            if (message_type == "工具信息" and individual.known_tools and 
+                random.random() < individual.cooperation):
+                tool_id = random.choice(individual.known_tools)
+                if tool_id not in other.known_tools:
+                    other.known_tools.append(tool_id)
+                    self.tools[tool_id].known_by.append(other.id)
+            
+            # 社交关系建立
+            current_connection = individual.social_connections.get(other.id, 0)
+            individual.social_connections[other.id] = current_connection + 0.1
+            
+            # 记录事件
+            if random.random() < 0.3:
+                self._add_event(f"💬 {individual.id} → {other.id}: {message_type}")
+    
+    def _build_house(self, individual: Individual):
+        """建造住宅"""
+        if individual.has_house or individual.carried_materials < 30:
+            return
+        
+        # 消耗材料
+        individual.carried_materials -= 30
+        individual.has_house = True
+        
+        self.houses.append({
+            'owner': individual.id,
+            'location': (individual.x, individual.y),
+            'build_day': self.current_day
+        })
+        
+        self._add_event(f"🏠 {individual.id} 建造了住宅")
+    
+    def _move_individual(self, individual: Individual):
+        """移动个体"""
+        dx = random.randint(-10, 10)
+        dy = random.randint(-10, 10)
+        
+        individual.x = max(0, min(self.world_size[0], individual.x + dx))
+        individual.y = max(0, min(self.world_size[1], individual.y + dy))
+    
+    def _process_reproduction(self):
+        """处理繁殖（使用提高后的概率和范围）"""
+        if len(self.individuals) < 2:
+            return
+        
+        # 使用提高后的繁殖概率
+        if random.random() < self.reproduction_probability:
+            # 寻找符合条件的父母对
+            potential_parents = []
+            for i, parent1 in enumerate(self.individuals):
+                for parent2 in self.individuals[i+1:]:
+                    distance = self._calculate_distance(parent1.x, parent1.y, parent2.x, parent2.y)
+                    # 使用提高后的繁殖范围
+                    if distance < self.reproduction_range:
+                        potential_parents.append((parent1, parent2, distance))
+            
+            if potential_parents:
+                # 选择距离最近的一对
+                potential_parents.sort(key=lambda x: x[2])
+                parents = potential_parents[0][:2]
+                
+                # 繁殖条件检查（条件放宽）
+                if (all(p.health > 50 for p in parents) and  # 从60降低到50
+                    all(p.hunger < 60 for p in parents) and   # 从50提高到60
+                    all(p.carried_food > 15 for p in parents)):  # 从20降低到15
+                    
+                    # 创建新个体
+                    child_id = f"{len(self.individuals)+1}.{random.randint(30,90)}.{random.randint(40,85)}.{random.randint(35,80)}"
+                    
+                    child = Individual(
+                        id=child_id,
+                        x=(parents[0].x + parents[1].x) // 2,
+                        y=(parents[0].y + parents[1].y) // 2,
+                        intelligence=max(30, min(90, (parents[0].intelligence + parents[1].intelligence) // 2 + random.randint(-10, 10))),
+                        physical=max(40, min(85, (parents[0].physical + parents[1].physical) // 2 + random.randint(-10, 10))),
+                        perception=max(35, min(80, (parents[0].perception + parents[1].perception) // 2 + random.randint(-10, 10))),
+                        curiosity=(parents[0].curiosity + parents[1].curiosity) / 2,
+                        cooperation=(parents[0].cooperation + parents[1].cooperation) / 2,
+                        aggression=(parents[0].aggression + parents[1].aggression) / 2,
+                        carried_food=10,
+                        carried_materials=5
+                    )
+                    
+                    self.individuals.append(child)
+                    self.stats['births'] += 1
+                    self._add_event(f"👶 新生命诞生: {child_id} (父母: {parents[0].id} & {parents[1].id})")
+    
+    def _process_deaths(self):
+        """处理死亡"""
+        dead_individuals = []
+        
+        for individual in self.individuals[:]:
+            # 死亡条件
+            if (individual.health <= 0 or 
+                individual.hunger >= 100 or 
+                individual.age > 100 + individual.physical):
+                
+                dead_individuals.append(individual)
+                self.individuals.remove(individual)
+                
+                # 记录死亡
+                death_cause = "饥饿" if individual.hunger >= 100 else "衰老" if individual.age > 100 else "健康"
+                self.death_log.append({
+                    'individual': individual.id,
+                    'day': self.current_day,
+                    'cause': death_cause,
+                    'age': individual.age
+                })
+                
+                self.stats['deaths'] += 1
+                self._add_event(f"💀 {individual.id} 死亡 (原因: {death_cause}, 年龄: {individual.age})")
+        
+        return dead_individuals
+    
+    def _regenerate_resources(self):
+        """资源再生"""
+        for resource in self.resources:
+            if resource.is_depleted and random.random() < 0.1:  # 10%概率再生
+                resource.amount = resource.max_amount * 0.5
+                resource.is_depleted = False
+    
+    def _spread_tool_knowledge(self):
+        """传播工具知识"""
+        for tool_id, tool in self.tools.items():
+            if len(tool.known_by) > 0 and random.random() < 0.02:  # 2%概率传播
+                known_individual = random.choice(tool.known_by)
+                known_ind_obj = next((ind for ind in self.individuals if ind.id == known_individual), None)
+                
+                if known_ind_obj:
+                    # 寻找附近的未知个体
+                    nearby_unknown = [
+                        ind for ind in self.individuals 
+                        if ind.id not in tool.known_by and
+                        self._calculate_distance(known_ind_obj.x, known_ind_obj.y, ind.x, ind.y) < ind.perception
+                    ]
+                    
+                    if nearby_unknown:
+                        receiver = random.choice(nearby_unknown)
+                        receiver.known_tools.append(tool_id)
+                        tool.known_by.append(receiver.id)
+    
+    def _collect_statistics(self):
+        """收集统计信息"""
+        self.stats['population'].append(len(self.individuals))
+    
+    def _calculate_distance(self, x1, y1, x2, y2):
+        """计算距离"""
+        return ((x1 - x2) ** 2 + (y1 - y2) ** 2) ** 0.5
+    
+    def _move_towards(self, x1, y1, x2, y2, max_step):
+        """向目标移动"""
+        dx, dy = x2 - x1, y2 - y1
+        distance = self._calculate_distance(x1, y1, x2, y2)
+        
+        if distance <= max_step:
+            return x2, y2
+        
+        ratio = max_step / distance
+        return x1 + dx * ratio, y1 + dy * ratio
+    
+    def _add_event(self, event_text):
+        """添加事件"""
+        self.event_text.config(state=tk.NORMAL)
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.event_text.insert(tk.END, f"[{timestamp}] {event_text}\n")
+        self.event_text.see(tk.END)
+        self.event_text.config(state=tk.DISABLED)
+    
+    def _update_status_display(self):
+        """更新状态显示"""
+        self.status_text.config(state=tk.NORMAL)
+        self.status_text.delete(1.0, tk.END)
+        
+        self.status_text.insert(tk.END, f"=== 第 {self.current_day} 天 ===\n\n")
+        self.status_text.insert(tk.END, f"👥 人口: {len(self.individuals)}\n")
+        self.status_text.insert(tk.END, f"🛠️ 工具: {len(self.tools)}\n")
+        self.status_text.insert(tk.END, f"🏠 住宅: {len(self.houses)}\n")
+        self.status_text.insert(tk.END, f"🌿 活跃资源: {len([r for r in self.resources if not r.is_depleted])}\n")
+        self.status_text.insert(tk.END, f"💬 总交流: {self.stats['communications']}\n")
+        self.status_text.insert(tk.END, f"📊 工具创造: {self.stats['tools_created']}\n")
+        self.status_text.insert(tk.END, f"👶 出生: {self.stats['births']} | 💀 死亡: {self.stats['deaths']}\n\n")
+        self.status_text.insert(tk.END, f"🎯 繁殖概率: {self.reproduction_probability:.2f}\n")
+        self.status_text.insert(tk.END, f"📏 繁殖范围: {self.reproduction_range}\n\n")
+        
+        # 显示最近的工具
+        if self.tools:
+            self.status_text.insert(tk.END, "最近开发的工具:\n")
+            recent_tools = list(self.tools.values())[-3:]
+            for tool in recent_tools:
+                self.status_text.insert(tk.END, f"  {tool.id} (知晓者: {len(tool.known_by)})\n")
+        
+        self.status_text.config(state=tk.DISABLED)
+    
+    def _update_display(self):
+        """更新显示"""
+        self._update_status_display()
+        self._update_charts()
+    
+    def _update_charts(self):
+        """更新图表"""
+        days = list(range(len(self.stats['population'])))
+        
+        if not days:
+            return
+            
+        # 更新人口图表
+        self.population_line.set_data(days, self.stats['population'])
+        self.ax1.relim()
+        self.ax1.autoscale_view()
+        
+        # 更新工具图表
+        tool_counts = [min(day, len(self.tools)) for day in days]
+        self.tools_line.set_data(days, tool_counts)
+        self.ax2.relim()
+        self.ax2.autoscale_view()
+        
+        # 更新资源图表（模拟数据）
+        food_data = [p * 0.8 for p in self.stats['population']]
+        material_data = [t * 1.2 for t in tool_counts]
+        self.food_line.set_data(days, food_data)
+        self.material_line.set_data(days, material_data)
+        self.ax3.relim()
+        self.ax3.autoscale_view()
+        
+        # 更新交流图表
+        comm_data = [min(day * 2, self.stats['communications']) for day in days]
+        self.comm_line.set_data(days, comm_data)
+        self.ax4.relim()
+        self.ax4.autoscale_view()
+        
+        self.canvas.draw()
+    
+    def _save_world_state(self):
+        """保存世界状态"""
+        try:
+            state = {
+                'current_day': self.current_day,
+                'population': len(self.individuals),
+                'tools_count': len(self.tools),
+                'houses_count': len(self.houses),
+                'reproduction_probability': self.reproduction_probability,
+                'reproduction_range': self.reproduction_range,
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            # 保存工具数据
+            tools_data = {tool_id: {
+                'name': tool.name,
+                'type': tool.tool_type,
+                'efficiency': tool.efficiency,
+                'known_by': tool.known_by
+            } for tool_id, tool in self.tools.items()}
+            
+            # 保存个体数据
+            individuals_data = {ind.id: {
+                'age': ind.age,
+                'health': ind.health,
+                'hunger': ind.hunger,
+                'has_house': ind.has_house,
+                'known_tools': ind.known_tools
+            } for ind in self.individuals}
+            
+            # 写入文件
+            with open(os.path.join(self.data_dir, f'world_state_{self.current_day:04d}.json'), 'w', encoding='utf-8') as f:
+                json.dump({
+                    'state': state,'状态': 状态,
+                    'tools': tools_data,“工具”：工具数据，
+                    'individuals': individuals_data
+                }, f, indent=2, ensure_ascii=False)
+            
+            self._add_event(f"💾 第{self.current_day}天状态已保存")self._add_event(f"第{self.current_day}天状态已保存")
+            
+        except Exception as e:
+            self._add_event(f"❌ 保存失败: {str(e)}")
+    
+    def run(self):
+        """运行模拟系统"""
+        self.root.mainloop()
+
+# 启动系统
+if __name__ == "__main__":
+    print("🚀 启动AI世界模拟系统 v2.0...")
+    world = MiniAIWorld()
+    world.run()世界.运行()
